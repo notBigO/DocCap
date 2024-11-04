@@ -1,35 +1,87 @@
-from datetime import datetime
 import re
+from typing import Dict, Any, List, Optional
+import logging
+
+from utils.document_templates import DocumentTemplates
+from utils.document_types import DocumentField, DocumentType
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def validate_document_details(extracted_text):
-    print(extracted_text)
+class DocumentValidator:
+    def __init__(self):
+        self.templates = [
+            DocumentTemplates.get_drivers_license_template(),
+            DocumentTemplates.get_passport_template(),
+        ]
 
-    name_match = re.search(
-        r"^([A-Z][a-z]+),\s*([A-Z][a-z]+)", extracted_text, re.MULTILINE
-    )
-    name = f"{name_match.group(2)} {name_match.group(1)}" if name_match else None
+    def _preprocess_text(self, text: str) -> str:
 
-    doc_number_match = re.search(
-        r"(\d{3}\s*\.\s*\d{4}\s*\.\s*\d{4}[A-Z])", extracted_text
-    )
-    doc_number = doc_number_match.group(1) if doc_number_match else None
+        text = text.upper()
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
-    if doc_number:
-        doc_number = doc_number.replace(" ", "")
+    def _extract_field(self, text: str, field: DocumentField) -> Optional[str]:
 
-    date_match = re.search(r"EXPIRES:\s*(\d{2}-\d{2}-\d{4})", extracted_text)
-    expiry_date_str = date_match.group(1) if date_match else None
+        for pattern in field.patterns:
+            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if match:
+                value = match.group(1)
+                if field.preprocessing_func:
+                    value = field.preprocessing_func(value)
+                if field.validation_func and not field.validation_func(value):
+                    continue
+                return value
+        return None
 
-    if not all([name, doc_number, expiry_date_str]):
-        raise ValueError("Could not extract all required document details")
+    def _identify_document_type(self, text: str) -> DocumentType:
 
-    try:
-        return {
-            "name": name,
-            "document_number": doc_number,
-            "expiration_date": expiry_date_str,
-        }
+        text = text.upper()
 
-    except ValueError as e:
-        raise ValueError(f"Invalid document details: {str(e)}")
+        dl_indicators = ["DRIVER", "LICENSE", "DL", "OPERATOR"]
+        passport_indicators = ["PASSPORT", "NATIONALITY", "ISSUING COUNTRY"]
+
+        dl_score = sum(1 for indicator in dl_indicators if indicator in text)
+        passport_score = sum(
+            1 for indicator in passport_indicators if indicator in text
+        )
+
+        if dl_score > passport_score:
+            return DocumentType.DRIVERS_LICENSE
+        elif passport_score > dl_score:
+            return DocumentType.PASSPORT
+        return DocumentType.UNKNOWN
+
+    def validate_document_details(self, extracted_text: str) -> Dict[str, Any]:
+
+        try:
+            cleaned_text = self._preprocess_text(extracted_text)
+            doc_type = self._identify_document_type(cleaned_text)
+
+            if doc_type == DocumentType.UNKNOWN:
+                raise ValueError("Unable to determine document type")
+
+            template = next(t for t in self.templates if t.doc_type == doc_type)
+
+            results = {"document_type": doc_type.value, "fields": {}}
+
+            missing_required_fields = []
+
+            for field_name, field in template.fields.items():
+                value = self._extract_field(cleaned_text, field)
+                if value:
+                    results["fields"][field_name] = value
+                elif field.required:
+                    missing_required_fields.append(field_name)
+
+            if missing_required_fields:
+                raise ValueError(
+                    f"Missing required fields: {', '.join(missing_required_fields)}"
+                )
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Document validation failed: {str(e)}")
+            raise ValueError(f"Document validation failed: {str(e)}")

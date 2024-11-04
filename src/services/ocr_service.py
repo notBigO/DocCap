@@ -1,3 +1,4 @@
+from venv import logger
 import cv2
 import numpy as np
 import pytesseract
@@ -16,7 +17,42 @@ def preprocess_image(image_content):
 def perform_ocr(image_content):
     try:
         processed_image = preprocess_image(image_content)
-        extracted_text = pytesseract.image_to_string(processed_image)
-        return extracted_text
+
+        configs = [
+            "--oem 3 --psm 3",
+            "--oem 3 --psm 4",
+            "--oem 3 --psm 6",
+        ]
+
+        best_result = ""
+        max_confidence = 0
+
+        for config in configs:
+            try:
+                data = pytesseract.image_to_data(
+                    processed_image, config=config, output_type=pytesseract.Output.DICT
+                )
+
+                confidences = [int(conf) for conf in data["conf"] if conf != "-1"]
+                avg_confidence = (
+                    sum(confidences) / len(confidences) if confidences else 0
+                )
+
+                if avg_confidence > max_confidence:
+                    max_confidence = avg_confidence
+                    best_result = pytesseract.image_to_string(
+                        processed_image, config=config
+                    )
+
+            except Exception as e:
+                logger.warning(f"OCR configuration {config} failed: {str(e)}")
+                continue
+
+        if not best_result:
+            raise Exception("All OCR attempts failed")
+
+        return best_result
+
     except Exception as e:
-        raise Exception(f"OCR failed: {e}")
+        logger.error(f"OCR processing failed: {str(e)}")
+        raise Exception(f"OCR failed: {str(e)}")
